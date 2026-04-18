@@ -85,6 +85,43 @@ command:
 
 Cost: ~10-15% throughput. The fix is being tracked upstream.
 
+### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
+
+**By far the most common gotcha.** Qwen3.6 with thinking enabled (which is the default
+for this image — `--reasoning-parser qwen3` + chat template's `enable_thinking=true`)
+spends **most of its `max_tokens` budget on reasoning** before emitting the final answer.
+With small `max_tokens`:
+
+```
+max_tokens=256:  256 reasoning tokens, 0 content tokens, finish=length, content=null  ← fails
+max_tokens=512:  ~500 reasoning tokens, 0 content, finish=length                       ← still fails
+max_tokens=2048: ~1100 reasoning tokens, ~20 content tokens, finish=stop               ← OK
+```
+
+OpenClaw / pi-ai sees `content: null` and shows "Agent couldn't generate a response."
+
+**Fix — three options:**
+
+1. **Bump `max_tokens` to ≥ 2048 for thinking workloads** (most chat clients default to 1024 or lower):
+   ```bash
+   curl ... -d '{"max_tokens": 4096, ...}'
+   ```
+   For OpenClaw, the validated config in `docs/openclaw.md` sets `maxTokens: 32768`, which is fine. But if a client overrides `max_tokens` lower in the request, they hit this.
+
+2. **Disable thinking for chat workloads** — add a per-request override:
+   ```bash
+   curl ... -d '{"chat_template_kwargs": {"enable_thinking": false}, ...}'
+   ```
+   Lower-quality reasoning but immediate `content`. Good for casual chat where you don't need
+   visible chain-of-thought.
+
+3. **Set the server-side default to thinking-off** if your primary use is chat:
+   ```yaml
+   # in docker-compose.yml command:
+   --default-chat-template-kwargs '{"enable_thinking": false}'
+   ```
+   Then thinking only fires when the client explicitly requests it.
+
 ### Empty `reasoning_content` in OpenAI responses
 
 Two possibilities:

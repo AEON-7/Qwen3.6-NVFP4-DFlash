@@ -45,7 +45,7 @@ services:
           --quantization compressed-tensors \
           --max-model-len 262144 \
           --max-num-seqs 128 \
-          --max-num-batched-tokens 8192 \
+          --max-num-batched-tokens 16384 \
           --gpu-memory-utilization 0.85 \
           --enable-chunked-prefill \
           --enable-prefix-caching \
