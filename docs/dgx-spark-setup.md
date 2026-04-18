@@ -43,6 +43,35 @@ The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is a **gated repo**. You must:
 
 ---
 
+## Pre-flight check (do this FIRST)
+
+Run these 4 commands to confirm everything you need is reachable. If any fails, stop and fix it before proceeding:
+
+```bash
+# 1. GPU + driver
+nvidia-smi | grep -E 'GB10|Driver'   # expect "NVIDIA GB10" + driver 580+
+
+# 2. Docker GPU passthrough
+docker run --rm --gpus all nvidia/cuda:13.2.0-base-ubuntu24.04 nvidia-smi | head -3
+
+# 3. GHCR image is pullable (anonymous)
+docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1
+# If this returns "unauthorized" or "not found":
+#   - The image visibility is set to private. Either:
+#     a) Wait for it to be flipped to public (file an issue at github.com/AEON-7/Qwen3.6-NVFP4-DFlash/issues), OR
+#     b) If you're AEON-7: flip at github.com/users/AEON-7/packages/container/vllm-spark-omni-q36/settings, OR
+#     c) Build from source per docs/build.md (note: also requires a public base image)
+
+# 4. Hugging Face access to the gated DFlash drafter
+hf download z-lab/Qwen3.6-35B-A3B-DFlash README.md --local-dir /tmp/dflash-test
+# If this 401s, request access at https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
+# (usually approved within hours)
+```
+
+All 4 pass → proceed. Any fails → fix that one first.
+
+---
+
 ## Step 1 — Verify host hardware + software
 
 ```bash

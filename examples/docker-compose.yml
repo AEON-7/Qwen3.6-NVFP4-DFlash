@@ -1,18 +1,27 @@
 # Qwen3.6-35B-A3B heretic NVFP4 + DFlash spec decode on DGX Spark
-# Image: vllm-spark-omni:v1
-#   - vLLM nightly (Qwen3.6 wiring fixes)
+#
+# Image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1
+#   - vLLM HEAD source-built for cu130/sm_120 (DGX Spark / GB10 / sm_121a)
 #   - flashinfer 0.6.8 (sm_120 NVFP4 KV decode kernels)
 #   - DFlash proposer baked in
-#   - Registry patch for Qwen3_5MoeForCausalLM (text-only)
+#   - 7 patches (registry, RTLD_LAZY, mamba block_size, M-RoPE)
 #
 # Target: AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4 (~21 GB)
-# Drafter: z-lab/Qwen3.6-35B-A3B-DFlash (905 MB, custom_code)
+# Drafter: z-lab/Qwen3.6-35B-A3B-DFlash (~905 MB, gated — request access on HF)
 #
-# Expected: 4-5x speedup over no-spec on math/code, ~3x on agentic chat
+# Expected: 91 tok/s single-stream greedy, 729 tok/s @64 concurrency (measured)
+#
+# ─── PATHS ─────────────────────────────────────────────────────────────────
+# This compose expects the standard layout from docs/dgx-spark-setup.md:
+#   /opt/qwen36/qwen36-nvfp4/    ← AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4
+#   /opt/qwen36/qwen36-dflash/   ← z-lab/Qwen3.6-35B-A3B-DFlash
+# Override with QWEN36_MODELS_DIR env var if your layout differs:
+#   QWEN36_MODELS_DIR=/my/path docker compose up -d
+# ───────────────────────────────────────────────────────────────────────────
 
 services:
   vllm:
-    image: vllm-spark-omni-q36:v1
+    image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1
     container_name: vllm-qwen36-heretic
     restart: unless-stopped
     network_mode: host
@@ -22,8 +31,8 @@ services:
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - NVIDIA_FORWARD_COMPAT=1
     volumes:
-      - /home/albert/stacks/gemma4/qwen36-heretic-nvfp4-fixed:/models/qwen36
-      - /home/albert/stacks/gemma4/qwen36-dflash:/models/qwen36-dflash
+      - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-nvfp4:/models/qwen36
+      - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-dflash:/models/qwen36-dflash
     command:
       - bash
       - -c

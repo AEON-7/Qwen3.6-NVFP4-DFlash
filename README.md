@@ -65,12 +65,15 @@ DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, 256K context, greedy decoding
 
 ## Quick start (5 commands)
 
+> **Pre-flight:** confirm `docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1` succeeds anonymously before continuing. If it returns "unauthorized", the package visibility is set to private — see [`docs/dgx-spark-setup.md`](docs/dgx-spark-setup.md#pre-flight-check-do-this-first) for what to do. Same applies to the gated DFlash drafter on HF.
+
 ```bash
 # 1. Pull the image (~9 GB compressed)
 docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1
 
-# 2. Pull both models
-mkdir -p /opt/qwen36 && cd /opt/qwen36
+# 2. Pull both models into the canonical layout (/opt/qwen36/...)
+sudo mkdir -p /opt/qwen36 && sudo chown $USER:$USER /opt/qwen36
+cd /opt/qwen36
 export HF_HUB_ENABLE_HF_TRANSFER=1   # 5x faster downloads
 hf download AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4 --local-dir ./qwen36-nvfp4 &
 hf download z-lab/Qwen3.6-35B-A3B-DFlash         --local-dir ./qwen36-dflash &
@@ -80,7 +83,8 @@ wait
 curl -fsSL https://raw.githubusercontent.com/AEON-7/Qwen3.6-NVFP4-DFlash/main/examples/docker-compose.yml \
   -o docker-compose.yml
 
-# 4. Start the server
+# 4. Start the server (compose expects /opt/qwen36/qwen36-{nvfp4,dflash}; override
+#    with QWEN36_MODELS_DIR=/your/path docker compose up -d if your layout differs)
 docker compose up -d
 docker compose logs -f   # ~3 min to first "Application startup complete"
 
@@ -90,7 +94,7 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"qwen36-fast","messages":[{"role":"user","content":"What is 17 × 23?"}],"temperature":0,"max_tokens":256}'
 ```
 
-For the full step-by-step guide with troubleshooting, see [`docs/dgx-spark-setup.md`](docs/dgx-spark-setup.md).
+For the full step-by-step guide with pre-flight checks and troubleshooting, see [`docs/dgx-spark-setup.md`](docs/dgx-spark-setup.md).
 
 ---
 

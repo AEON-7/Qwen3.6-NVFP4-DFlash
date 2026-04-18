@@ -2,6 +2,22 @@
 
 If you don't want to pull `ghcr.io/aeon-7/vllm-spark-omni-q36:v1`, here's how to reproduce it.
 
+> ⚠️ **Heads-up about the base image:** The Dockerfile inherits from
+> `ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest`, which carries the original
+> sm_120 NVFP4 kernel build chain (CUDA 13.2 toolkit, PyTorch nightly cu130,
+> baked-in DFlash + modelopt patches). **That base image is currently private.**
+>
+> If you can't pull the base, you have three options:
+> 1. **Easiest:** wait for it to be flipped to public (file an issue), OR
+> 2. **Authenticated pull:** `docker login ghcr.io -u <your-gh-user>` with a PAT that
+>    has the `read:packages` scope IF you've been granted access to the AEON-7 org's
+>    private packages, OR
+> 3. **Fully self-built:** swap the `FROM` line in the Dockerfile to
+>    `nvidia/cuda:13.2.0-devel-ubuntu24.04` and add the missing layers (PyTorch nightly
+>    cu130, sm_120 NVFP4 kernel build for vLLM/FlashInfer, modelopt patches). This is
+>    multi-hour engineering work — see [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker)
+>    for a reasonable starting point.
+
 ## Why source-build?
 
 The vLLM nightly wheels at https://wheels.vllm.ai/nightly are built against **CUDA 12.8**. DGX Spark ships with **CUDA 13.x** PyTorch nightly. Mixing produces `libcudart.so.12 cannot open shared object` errors at import.
