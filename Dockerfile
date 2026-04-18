@@ -112,6 +112,16 @@ RUN python3 /opt/patches/patch_kv_cache_utils.py
 COPY patches/patch_mrope_text_fallback.py /opt/patches/
 RUN python3 /opt/patches/patch_mrope_text_fallback.py
 
+# CUDA graph capture-size alignment patch (SM121 stability)
+# vLLM gates the spec-decode capture-size alignment filter to cudagraph_mode=FULL only;
+# default PIECEWISE silently skips it. Result: capture sizes [1,2,4,8,16,24,32,40,...]
+# contain non-multiples of (1+spec_tokens), causing cudaErrorIllegalAddress on
+# partial-acceptance decode steps. This patch removes the FULL-only gate so PIECEWISE
+# mode also gets aligned capture sizes. Without this, users would need to pass
+# --compilation-config '{"cudagraph_capture_sizes":[16,32,48,...]}' manually.
+COPY patches/patch_cudagraph_align.py /opt/patches/
+RUN python3 /opt/patches/patch_cudagraph_align.py
+
 # Verification — must pass; image is unusable otherwise
 # Note: cannot test `import vllm._C` here — libcuda.so.1 is driver lib, only present
 # at runtime when nvidia-container-runtime mounts it via --gpus all
