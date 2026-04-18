@@ -21,24 +21,39 @@ A turn-key deployment of **[`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](https://hugg
 
 ## Benchmark headline numbers (measured)
 
-DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, **stable production config** (Marlin + 16-aligned CUDA graphs + DFlash), 256K context, greedy decoding:
+DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, **production config** (Marlin GEMM + 16-aligned CUDA graphs + DFlash + flash_attn), 256K context, greedy decoding (T=0).
+
+### Concurrency sweep (512-token outputs)
+
+| Concurrency | Aggregate tok/s | Per-req tok/s | TTFT |
+|---:|---:|---:|---:|
+| **1** | **114.9** | 114.9 | 126 ms |
+| 4 | 257.0 | 64.3 | 130 ms |
+| 16 | 510.6 | 31.9 | 240 ms |
+| **64** | **766.6** | 12.0 | 480 ms |
+| 128 | 536.8 | 4.2 | 743 ms |
+
+### Long-form (full reasoning + answer)
 
 | Test | Throughput |
 |---|---|
-| Single 4096 max_tokens | **53.2 tok/s** |
+| Single 4096 max_tokens (reasoning fills budget) | 53.2 tok/s |
 | Single 8192 max_tokens (full content emitted) | **77.8 tok/s** |
-| 4-concurrent × 4096 | **47-49 tok/s/req** (~190 tok/s aggregate) |
+| 4-concurrent × 4096 | 47-49 tok/s/req (~190 tok/s agg) |
 
-**DFlash speculative decoding** (greedy):
+### DFlash speculative decoding (greedy)
+
 - Position-0 acceptance: **78.5%**
 - Mean accepted length: **4.21 tokens**
-- Stress-tested 12+ min with no crashes
+- Stress-tested 12+ min with NO crashes; full 1-128 concurrency sweep clean
 
-> **Earlier benchmark numbers (91 tok/s single, 729 tok/s @64) were from an earlier
+> **History note:** Earlier numbers (91 tok/s single, 729 tok/s @64) were from a
 > config with default CUDA graph capture sizes — that config crashes intermittently
 > with `cudaErrorIllegalAddress` mid-decode after 5-15 minutes of serving on SM121.
-> Use the production config in `examples/docker-compose.yml` instead. See
-> [docs/troubleshooting.md](docs/troubleshooting.md) for the root cause.**
+> Root cause: vLLM's spec-decode capture-size alignment filter is gated to
+> `cudagraph_mode=FULL` only; `PIECEWISE` (default) silently skips it. Fix is in the
+> production compose: `--compilation-config '{"cudagraph_capture_sizes":[16,32,48,...]}`.
+> See [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ---
 
