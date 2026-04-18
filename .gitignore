@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Local Docker artifacts
+*.tar
+*.tar.gz
+
+# Logs
+*.log
+build-*.log
+
+# Local model files (these go in /opt/qwen36 or wherever you point compose)
+qwen36-nvfp4/
+qwen36-dflash/
+*.safetensors
+
+# Local secrets
+.env
+*.pem
+*.key
