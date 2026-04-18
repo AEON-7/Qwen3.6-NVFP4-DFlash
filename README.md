@@ -21,20 +21,24 @@ A turn-key deployment of **[`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](https://hugg
 
 ## Benchmark headline numbers (measured)
 
-DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, 256K context, greedy decoding, 256-token outputs, FlashAttention backend:
+DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, **stable production config** (Marlin + 16-aligned CUDA graphs + DFlash), 256K context, greedy decoding:
 
-| Concurrency | Aggregate tok/s | Per-req tok/s | TTFT |
-|---:|---:|---:|---:|
-| 1   | 91.5  | 91.5 | 129 ms |
-| 4   | 198.6 | 49.6 | 156 ms |
-| 16  | 548.3 | 34.3 | 212 ms |
-| **64** | **729.1** | 11.4 | 499 ms |
-| 128 | 486.8 | 3.8  | 808 ms |
+| Test | Throughput |
+|---|---|
+| Single 4096 max_tokens | **53.2 tok/s** |
+| Single 8192 max_tokens (full content emitted) | **77.8 tok/s** |
+| 4-concurrent × 4096 | **47-49 tok/s/req** (~190 tok/s aggregate) |
 
-**DFlash speculative decoding** (single-stream, greedy):
-- Position-0 acceptance: **80.8%** (z-lab target: 70-80% ✓)
-- Mean accepted length: **4.90 tokens** (z-lab target: 4-8 ✓)
-- Throughput multiplier vs no-spec: ~3× single-stream
+**DFlash speculative decoding** (greedy):
+- Position-0 acceptance: **78.5%**
+- Mean accepted length: **4.21 tokens**
+- Stress-tested 12+ min with no crashes
+
+> **Earlier benchmark numbers (91 tok/s single, 729 tok/s @64) were from an earlier
+> config with default CUDA graph capture sizes — that config crashes intermittently
+> with `cudaErrorIllegalAddress` mid-decode after 5-15 minutes of serving on SM121.
+> Use the production config in `examples/docker-compose.yml` instead. See
+> [docs/troubleshooting.md](docs/troubleshooting.md) for the root cause.**
 
 ---
 

@@ -64,10 +64,16 @@ services:
           --reasoning-parser qwen3 \
           --speculative-config '{"method":"dflash","model":"/models/qwen36-dflash","num_speculative_tokens":15}' \
           --attention-backend flash_attn \
-          --enforce-eager
-          # --enforce-eager required on SM121 alongside VLLM_TEST_FORCE_FP8_MARLIN=1.
-          # Without it, CUDA graphs trigger cudaErrorIllegalAddress mid-decode (recurs ~10 min).
-          # Cost: ~10-15% throughput vs graphs. Ceiling: 82 tok/s single 8K, 67 tok/s @ 4096-cap.
+          --compilation-config '{"cudagraph_capture_sizes":[16,32,48,64,80,96,112,128]}'
+          # SM121 stability: align cudagraph capture sizes to multiples of (1+spec_tokens=16).
+          # Root cause: vllm/config/compilation.py:1378 only applies the spec-decode alignment
+          # filter for cudagraph_mode=FULL; PIECEWISE (default) skips it, so default capture
+          # sizes [1,2,4,8,16,24,32,40,...] contain non-multiples of 16. On partial-acceptance
+          # decode steps, vLLM dispatches to a misaligned cached graph; the kernel reads
+          # slot_mapping/positions tensors at wrong offsets → cudaErrorIllegalAddress mid-decode.
+          # Forcing capture_sizes to multiples-of-16 fixes the bug AND lets us keep CUDA graphs
+          # (vs --enforce-eager workaround). Result: +67% short / +42% long throughput vs eager.
+          # Tested 12+ min stress with NO crashes.
     ipc: host
     deploy:
       resources:

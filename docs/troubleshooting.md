@@ -96,18 +96,29 @@ Container auto-restarts (if you have `restart: unless-stopped`). Crashes recur e
 
 **Root cause:** FlashInfer's CUTLASS NVFP4 grouped-GEMM kernel is broken on SM121. Only 101 KB SMEM per SM (vs 228 KB on SM100) — the autotuner picks tile shapes that overflow SMEM at runtime. Documented in [rmagur1203/vllm-dgx-spark TLDR](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md): 4 days of testing 144 configs across 6 axes confirmed CUTLASS NVFP4 is unstable on SM121 without 4 custom CUTLASS header patches.
 
-**Fix:** force the Marlin kernel:
+**Fix:** TWO independent fixes both required:
+
+**1. Force the Marlin GEMM kernel** (avoids broken NVFP4 CUTLASS):
 ```yaml
 # in compose, environment:
 - VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
-The omni image bakes this in. If you're seeing crashes, either (a) you're using a different image without it baked in, or (b) something is overriding to 0. Verify:
+The omni image bakes this in. Verify:
 ```bash
 docker exec vllm-qwen36-heretic env | grep MARLIN
 # expect: VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 
-Performance impact: ~7.8% slower single-stream than CUTLASS (when CUTLASS works). On our measurements: **82 tok/s with Marlin vs 91 tok/s with CUTLASS-but-crashing**. Worth the trade for stability.
+**2. Align CUDA graph capture sizes to (1+spec_tokens=16)**:
+```yaml
+# in compose command, add:
+--compilation-config '{"cudagraph_capture_sizes":[16,32,48,64,80,96,112,128]}'
+```
+Root cause: `vllm/config/compilation.py:1378` only applies the spec-decode alignment filter for `cudagraph_mode=FULL`; PIECEWISE (default) skips it. Default capture sizes `[1,2,4,8,16,24,32,40,...]` contain non-multiples of 16. On partial-acceptance decode steps, vLLM dispatches to a misaligned cached graph; the kernel reads slot_mapping/positions tensors at wrong offsets → illegal-address read.
+
+Without BOTH fixes, you'll either crash on Marlin alone (CUDA graph bug) or on CUTLASS alone (SMEM overflow) or on neither alone (still crashes after a few minutes).
+
+Performance: with both fixes + CUDA graphs, measured **77.8 tok/s single-stream 8K, ~190 tok/s aggregate at 4-concurrent**. Without `--enforce-eager` fallback, graphs are ~30% faster than eager mode.
 
 ### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
 
