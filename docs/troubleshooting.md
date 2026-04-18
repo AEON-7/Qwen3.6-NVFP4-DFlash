@@ -85,6 +85,30 @@ command:
 
 Cost: ~10-15% throughput. The fix is being tracked upstream.
 
+### `cudaErrorIllegalAddress` / "illegal memory access" mid-decode
+
+**Symptom:** Server boots fine, serves requests for 5-15 min, then crashes mid-decode with:
+```
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress'
+```
+Container auto-restarts (if you have `restart: unless-stopped`). Crashes recur every few minutes.
+
+**Root cause:** FlashInfer's CUTLASS NVFP4 grouped-GEMM kernel is broken on SM121. Only 101 KB SMEM per SM (vs 228 KB on SM100) — the autotuner picks tile shapes that overflow SMEM at runtime. Documented in [rmagur1203/vllm-dgx-spark TLDR](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md): 4 days of testing 144 configs across 6 axes confirmed CUTLASS NVFP4 is unstable on SM121 without 4 custom CUTLASS header patches.
+
+**Fix:** force the Marlin kernel:
+```yaml
+# in compose, environment:
+- VLLM_TEST_FORCE_FP8_MARLIN=1
+```
+The omni image bakes this in. If you're seeing crashes, either (a) you're using a different image without it baked in, or (b) something is overriding to 0. Verify:
+```bash
+docker exec vllm-qwen36-heretic env | grep MARLIN
+# expect: VLLM_TEST_FORCE_FP8_MARLIN=1
+```
+
+Performance impact: ~7.8% slower single-stream than CUTLASS (when CUTLASS works). On our measurements: **82 tok/s with Marlin vs 91 tok/s with CUTLASS-but-crashing**. Worth the trade for stability.
+
 ### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
 
 **By far the most common gotcha.** Qwen3.6 with thinking enabled (which is the default

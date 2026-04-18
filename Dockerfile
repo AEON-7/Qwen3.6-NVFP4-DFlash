@@ -42,7 +42,12 @@ ENV PIP_NO_CACHE_DIR=1 \
     CCACHE_DIR=/root/.ccache \
     USE_CCACHE=1 \
     CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH
+    PATH=/usr/local/cuda/bin:$PATH \
+    VLLM_TEST_FORCE_FP8_MARLIN=1
+    # VLLM_TEST_FORCE_FP8_MARLIN=1 baked in as default — required for SM121/GB10 stability.
+    # FlashInfer's CUTLASS NVFP4 path crashes with cudaErrorIllegalAddress on SM121 due
+    # to 101KB SMEM limit (vs 228KB on SM100). Marlin is the only stable backend.
+    # Override with -e VLLM_TEST_FORCE_FP8_MARLIN=0 if you've patched CUTLASS yourself.
 
 # Pre-build snapshot
 RUN python3 -c "import torch; print(f'torch={torch.__version__} CUDA={torch.version.cuda}')" && \

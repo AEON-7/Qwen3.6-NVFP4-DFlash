@@ -15,6 +15,20 @@ This image is **hardware-specific** and **NOT a general vLLM build**. If you ski
 | Unified memory | 128 GB (Spark default) |
 | Disk | 35 GB free |
 
+### ⚠️ Critical SM121 stability requirement
+
+**The `VLLM_TEST_FORCE_FP8_MARLIN=1` env var is REQUIRED on DGX Spark.** Without it,
+vLLM picks FlashInfer's CUTLASS NVFP4 GEMM path which is fundamentally broken on
+SM121 (only 101 KB SMEM per SM vs 228 KB on SM100 — every tile shape larger than
+the smallest fails with `cudaFuncSetAttribute` SMEM overflow). Symptoms:
+- `cudaErrorIllegalAddress` crashes 5-15 minutes into serving
+- NaN / zero outputs on dense FP4 GEMM (E2M1 instruction incompatibility)
+
+The omni image bakes this env var in by default. The compose also sets it
+explicitly. **Don't override unless you've manually patched CUTLASS headers.**
+
+Source: [rmagur1203/vllm-dgx-spark TLDR.md](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md) — 4-day investigation, 144 configs tested.
+
 **This image will NOT work on:**
 - H100 / H200 (sm_90 — Hopper)
 - A100 / A40 (sm_80 — Ampere)

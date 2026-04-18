@@ -30,6 +30,14 @@ services:
       - TORCH_MATMUL_PRECISION=high
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - NVIDIA_FORWARD_COMPAT=1
+      # ▼ CRITICAL for DGX Spark / SM121 ▼
+      # FlashInfer's CUTLASS NVFP4 path is broken on SM121 (only 101KB SMEM vs 228KB
+      # on SM100 → autotuner fails with cudaFuncSetAttribute SMEM overflow on every
+      # tile shape larger than 128×128×64B; dense FP4 GEMM produces NaN/zeros due to
+      # E2M1 instruction incompatibility). Without this flag, vLLM intermittently
+      # crashes with `cudaErrorIllegalAddress` mid-decode.
+      # Reference: rmagur1203/vllm-dgx-spark TLDR.md (4-day investigation, 144 configs)
+      - VLLM_TEST_FORCE_FP8_MARLIN=1
     volumes:
       - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-nvfp4:/models/qwen36
       - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-dflash:/models/qwen36-dflash
@@ -55,7 +63,11 @@ services:
           --tool-call-parser qwen3_coder \
           --reasoning-parser qwen3 \
           --speculative-config '{"method":"dflash","model":"/models/qwen36-dflash","num_speculative_tokens":15}' \
-          --attention-backend flash_attn
+          --attention-backend flash_attn \
+          --enforce-eager
+          # --enforce-eager required on SM121 alongside VLLM_TEST_FORCE_FP8_MARLIN=1.
+          # Without it, CUDA graphs trigger cudaErrorIllegalAddress mid-decode (recurs ~10 min).
+          # Cost: ~10-15% throughput vs graphs. Ceiling: 82 tok/s single 8K, 67 tok/s @ 4096-cap.
     ipc: host
     deploy:
       resources:
