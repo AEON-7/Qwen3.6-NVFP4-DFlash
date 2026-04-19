@@ -109,16 +109,20 @@ docker exec vllm-qwen36-heretic env | grep MARLIN
 # expect: VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 
-**2. Align CUDA graph capture sizes to (1+spec_tokens=16)**:
+**2. Add `--enforce-eager` to disable CUDA graphs**:
 ```yaml
 # in compose command, add:
---compilation-config '{"cudagraph_capture_sizes":[16,32,48,64,80,96,112,128]}'
+--enforce-eager
 ```
-Root cause: `vllm/config/compilation.py:1378` only applies the spec-decode alignment filter for `cudagraph_mode=FULL`; PIECEWISE (default) skips it. Default capture sizes `[1,2,4,8,16,24,32,40,...]` contain non-multiples of 16. On partial-acceptance decode steps, vLLM dispatches to a misaligned cached graph; the kernel reads slot_mapping/positions tensors at wrong offsets → illegal-address read.
+Why: even with capture sizes aligned to multiples of (1+spec_tokens=16), CUDA graphs on SM121 still trigger `cudaErrorIllegalAddress` mid-decode. Empirically reproduced after capture-size alignment was confirmed via boot logs. Crash signature is suspiciously consistent (`num_output_tokens=33`, single in-flight request, partial-acceptance decode step) but the actual kernel-level cause hasn't been pinned down beyond "DFlash + CUDA graphs + SM121 = unstable."
 
-Without BOTH fixes, you'll either crash on Marlin alone (CUDA graph bug) or on CUTLASS alone (SMEM overflow) or on neither alone (still crashes after a few minutes).
+`--enforce-eager` definitively avoids it. Cost: ~25-30% throughput vs graphs. Tested 12+ min stress + 1-128 concurrency sweep with zero crashes.
 
-Performance: with both fixes + CUDA graphs, measured **77.8 tok/s single-stream 8K, ~190 tok/s aggregate at 4-concurrent**. Without `--enforce-eager` fallback, graphs are ~30% faster than eager mode.
+> **History note:** an earlier theory blamed unaligned `cudagraph_capture_sizes`. The v1.2 image patches `vllm/config/compilation.py:1378` to auto-align (no manual `--compilation-config` needed) — that part of the fix is real and worth keeping (visible in boot config dump). But it's not sufficient alone. Without `--enforce-eager`, real-world serving still crashes within minutes.
+
+Without BOTH fixes (Marlin + eager), you'll crash within minutes of serving regardless of which one you skip.
+
+Performance with the stable config: **54-67 tok/s single-stream long-form, ~165 tok/s aggregate at 4-concurrent, ~115 tok/s short single-stream**.
 
 ### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
 
