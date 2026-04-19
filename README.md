@@ -21,31 +21,41 @@ A turn-key deployment of **[`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](https://hugg
 
 ## Benchmark headline numbers (measured)
 
-DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, **stable production config** (Marlin GEMM + `--enforce-eager` + DFlash + flash_attn), 256K context, greedy decoding (T=0).
+DGX Spark, Qwen3.6-35B-A3B-heretic NVFP4 + DFlash, **production config** (Marlin GEMM + CUDA graphs + DFlash + flash_attn + fresh z-lab drafter), 256K context, greedy decoding (T=0).
 
-### Long-form (full reasoning + answer)
+### Concurrency sweep (512-token outputs)
+
+| Concurrency | Aggregate tok/s | Per-req tok/s | TTFT |
+|---:|---:|---:|---:|
+| **1** | **123.5** | 123.5 | 81 ms |
+| 4 | 239.0 | 59.7 | 132 ms |
+| 16 | 511.7 | 32.0 | 216 ms |
+| **64** | **752.7** | 11.8 | 384 ms |
+| 128 | 470.0 | 3.7 | 663 ms |
+
+### Single-stream long context
 
 | Test | Throughput |
 |---|---|
-| Single 4096 max_tokens (reasoning fills budget) | 31.8 tok/s |
-| Single 8192 max_tokens (full content emitted) | **54.6 tok/s** |
-| 4-concurrent × 4096 | 40-43 tok/s/req (~165 tok/s agg) |
+| Short prompt, 1024 output | ~130 tok/s |
+| 22K prompt, 1024 output (no crash) | ~18 tok/s wall (prefill-dominated) |
 
 ### DFlash speculative decoding (greedy)
 
-- Position-0 acceptance: **76-78%**
-- Mean accepted length: **3.7-4.4 tokens**
-- 12+ min stress + multiple real-world chat sessions: stable
+- Position-0 acceptance: **62-80%** (varies by request shape)
+- Mean accepted length: **2.3-4.4 tokens**
+- Long-context tested: 22,628-token prompt + 1024 completion, no crashes
 
-> **Why `--enforce-eager` and not CUDA graphs?** Despite extensive
-> isolation work, DFlash + CUDA graphs on SM121 reproducibly crashes with
-> `cudaErrorIllegalAddress` mid-decode after some minutes of serving. We
-> patched the obvious cause (vLLM's spec-decode capture-size alignment
-> being gated to FULL-only mode — see commit `87cca4c`), confirmed the
-> patch works at boot config inspection, but real-world chat sessions
-> *still* reproduced the crash. Falling back to eager mode trades ~25-30%
-> throughput for full stability. See [docs/troubleshooting.md](docs/troubleshooting.md)
-> for full investigation history.
+> **2026-04-19 RESOLUTION:** z-lab published an updated DFlash drafter
+> (`z-lab/Qwen3.6-35B-A3B-DFlash`) ~4 hours before this writing that fixes
+> a long-context crash that had us chasing CUDA-graph theories for hours.
+> If you cloned the drafter before 2026-04-19, **re-pull**:
+> ```
+> hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir ./qwen36-dflash --force-download
+> ```
+> With the fresh drafter, `--enforce-eager` is no longer needed. The earlier
+> "stable" config (eager + Marlin) is now just a fallback for any future
+> regression.
 
 ---
 

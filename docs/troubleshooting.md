@@ -109,20 +109,19 @@ docker exec vllm-qwen36-heretic env | grep MARLIN
 # expect: VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 
-**2. Add `--enforce-eager` to disable CUDA graphs**:
-```yaml
-# in compose command, add:
---enforce-eager
+**2. Re-pull the latest DFlash drafter from z-lab**:
+
+The crash that had us chasing CUDA-graph and capture-size theories was actually a **drafter bug at long context (>16K)** that z-lab fixed in an update on 2026-04-19. If your local drafter copy predates that:
+
+```bash
+hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir ./qwen36-dflash --force-download
 ```
-Why: even with capture sizes aligned to multiples of (1+spec_tokens=16), CUDA graphs on SM121 still trigger `cudaErrorIllegalAddress` mid-decode. Empirically reproduced after capture-size alignment was confirmed via boot logs. Crash signature is suspiciously consistent (`num_output_tokens=33`, single in-flight request, partial-acceptance decode step) but the actual kernel-level cause hasn't been pinned down beyond "DFlash + CUDA graphs + SM121 = unstable."
 
-`--enforce-eager` definitively avoids it. Cost: ~25-30% throughput vs graphs. Tested 12+ min stress + 1-128 concurrency sweep with zero crashes.
+With the fresh drafter, `--enforce-eager` is **no longer needed** and CUDA graphs work fine, giving back ~42% throughput.
 
-> **History note:** an earlier theory blamed unaligned `cudagraph_capture_sizes`. The v1.2 image patches `vllm/config/compilation.py:1378` to auto-align (no manual `--compilation-config` needed) — that part of the fix is real and worth keeping (visible in boot config dump). But it's not sufficient alone. Without `--enforce-eager`, real-world serving still crashes within minutes.
+**Fallback if you can't re-pull**: add `--enforce-eager` to disable CUDA graphs. ~25-30% throughput cost but bypasses the long-context drafter bug. Performance with eager fallback: ~54-67 tok/s single-stream long-form, ~165 tok/s aggregate at 4-concurrent, ~115 tok/s short single-stream.
 
-Without BOTH fixes (Marlin + eager), you'll crash within minutes of serving regardless of which one you skip.
-
-Performance with the stable config: **54-67 tok/s single-stream long-form, ~165 tok/s aggregate at 4-concurrent, ~115 tok/s short single-stream**.
+> **History:** the v1.2 image bakes a separate fix to `vllm/config/compilation.py:1378` that aligns CUDA graph capture sizes to multiples of `(1+num_speculative_tokens)` — also real, also necessary, but not the actual cause of this specific crash. Both fixes are needed for the production config.
 
 ### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
 

@@ -63,15 +63,15 @@ services:
           --tool-call-parser qwen3_coder \
           --reasoning-parser qwen3 \
           --speculative-config '{"method":"dflash","model":"/models/qwen36-dflash","num_speculative_tokens":15}' \
-          --attention-backend flash_attn \
-          --enforce-eager
-          # 2026-04-19 STABILITY UPDATE: --enforce-eager is required.
-          # Earlier hypothesis that aligned cudagraph_capture_sizes alone would solve
-          # cudaErrorIllegalAddress was disproven by a real chat session reproducing the
-          # crash even with the v1.2 patch (alignment confirmed working but crash recurred
-          # at num_output_tokens=33). The only config that survives long-running real-world
-          # serving is eager mode + Marlin + DFlash. Cost: ~25-30% throughput vs graphs.
-          # See docs/troubleshooting.md for full root-cause investigation.
+          --attention-backend flash_attn
+          # 2026-04-19 RESOLVED: z-lab pushed an updated DFlash drafter that fixes the
+          # long-context crash (>16K). Re-pull the drafter from HF if you cloned before
+          # 2026-04-19 ~04:00 UTC:
+          #   hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir ./qwen36-dflash --force-download
+          #
+          # With the fresh drafter, --enforce-eager is no longer required. CUDA graphs are
+          # safe and give ~42% throughput improvement (130 tok/s short single-stream vs
+          # 91 tok/s eager). Capture-size alignment patch in v1.2 image still applies.
     ipc: host
     deploy:
       resources:
