@@ -1,27 +1,20 @@
-# Qwen3.6-35B-A3B heretic NVFP4 + DFlash spec decode on DGX Spark
+# Qwen3.6-35B-A3B-heretic NVFP4 + DFlash on DGX Spark
 #
-# Image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1
-#   - vLLM HEAD source-built for cu130/sm_120 (DGX Spark / GB10 / sm_121a)
-#   - flashinfer 0.6.8 (sm_120 NVFP4 KV decode kernels)
-#   - DFlash proposer baked in
-#   - 7 patches (registry, RTLD_LAZY, mamba block_size, M-RoPE)
+# Production config validated 2026-04-20.
+#   - Image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2 (or :latest)
+#   - Model: AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4 (v2 multimodal-preserved, ~22 GB)
+#   - Drafter: z-lab/Qwen3.6-35B-A3B-DFlash (~905 MB; MUST be re-pulled if cloned before 2026-04-19)
 #
-# Target: AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4 (~21 GB)
-# Drafter: z-lab/Qwen3.6-35B-A3B-DFlash (~905 MB, gated — request access on HF)
+# Measured performance (single-stream, greedy):
+#   ~117 tok/s short prompts; ~785 tok/s aggregate at 128-concurrency.
 #
-# Expected: 91 tok/s single-stream greedy, 729 tok/s @64 concurrency (measured)
-#
-# ─── PATHS ─────────────────────────────────────────────────────────────────
-# This compose expects the standard layout from docs/dgx-spark-setup.md:
+# Default layout (override with QWEN36_MODELS_DIR=/your/path docker compose up -d):
 #   /opt/qwen36/qwen36-nvfp4/    ← AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4
 #   /opt/qwen36/qwen36-dflash/   ← z-lab/Qwen3.6-35B-A3B-DFlash
-# Override with QWEN36_MODELS_DIR env var if your layout differs:
-#   QWEN36_MODELS_DIR=/my/path docker compose up -d
-# ───────────────────────────────────────────────────────────────────────────
 
 services:
   vllm:
-    image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1
+    image: ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
     container_name: vllm-qwen36-heretic
     restart: unless-stopped
     network_mode: host
@@ -30,13 +23,13 @@ services:
       - TORCH_MATMUL_PRECISION=high
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - NVIDIA_FORWARD_COMPAT=1
-      # ▼ CRITICAL for DGX Spark / SM121 ▼
-      # FlashInfer's CUTLASS NVFP4 path is broken on SM121 (only 101KB SMEM vs 228KB
-      # on SM100 → autotuner fails with cudaFuncSetAttribute SMEM overflow on every
-      # tile shape larger than 128×128×64B; dense FP4 GEMM produces NaN/zeros due to
-      # E2M1 instruction incompatibility). Without this flag, vLLM intermittently
-      # crashes with `cudaErrorIllegalAddress` mid-decode.
-      # Reference: rmagur1203/vllm-dgx-spark TLDR.md (4-day investigation, 144 configs)
+      # ▼ MANDATORY for DGX Spark / SM121 stability ▼
+      # FlashInfer's CUTLASS NVFP4 path is broken on SM121 (only 101 KB SMEM per SM
+      # vs 228 KB on SM100 → autotuner SMEM-overflows on every tile shape larger
+      # than 128×128×64B; dense FP4 GEMM produces NaN/zeros from E2M1 instruction
+      # incompatibility). Without this, vLLM crashes mid-decode with
+      # cudaErrorIllegalAddress within minutes.
+      # Reference: rmagur1203/vllm-dgx-spark TLDR.md (4-day, 144-config investigation).
       - VLLM_TEST_FORCE_FP8_MARLIN=1
     volumes:
       - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-nvfp4:/models/qwen36
@@ -53,7 +46,7 @@ services:
           --quantization compressed-tensors \
           --max-model-len 262144 \
           --max-num-seqs 128 \
-          --max-num-batched-tokens 16384 \
+          --max-num-batched-tokens 65536 \
           --gpu-memory-utilization 0.85 \
           --enable-chunked-prefill \
           --enable-prefix-caching \
@@ -64,14 +57,11 @@ services:
           --reasoning-parser qwen3 \
           --speculative-config '{"method":"dflash","model":"/models/qwen36-dflash","num_speculative_tokens":15}' \
           --attention-backend flash_attn
-          # 2026-04-19 RESOLVED: z-lab pushed an updated DFlash drafter that fixes the
-          # long-context crash (>16K). Re-pull the drafter from HF if you cloned before
-          # 2026-04-19 ~04:00 UTC:
-          #   hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir ./qwen36-dflash --force-download
-          #
-          # With the fresh drafter, --enforce-eager is no longer required. CUDA graphs are
-          # safe and give ~42% throughput improvement (130 tok/s short single-stream vs
-          # 91 tok/s eager). Capture-size alignment patch in v1.2 image still applies.
+          # NOTE: --enforce-eager is NOT required when using v1.2 image + the latest z-lab
+          # DFlash drafter (re-pulled 2026-04-19+). The image's compilation.py:1378 patch
+          # (auto-aligns CUDA graph capture sizes to multiples of 1+spec_tokens) plus the
+          # drafter's long-context fix means CUDA graphs are stable and give ~30% perf
+          # over eager mode.
     ipc: host
     deploy:
       resources:

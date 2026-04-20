@@ -1,6 +1,6 @@
 # Building the image yourself
 
-If you don't want to pull `ghcr.io/aeon-7/vllm-spark-omni-q36:v1`, here's how to reproduce it.
+If you don't want to pull `ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2`, here's how to reproduce it.
 
 > ⚠️ **Heads-up about the base image:** The Dockerfile inherits from
 > `ghcr.io/aeon-7/vllm-spark-gemma4-nvfp4-awq:latest`, which carries the original

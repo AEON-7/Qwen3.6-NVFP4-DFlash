@@ -2,12 +2,12 @@
 # build.sh — Source-build vllm-spark-omni-q36 on a DGX Spark or sm_120 host.
 #
 # Usage: ./scripts/build.sh [TAG]
-#   TAG defaults to v1 → produces vllm-spark-omni-q36:v1
+#   TAG defaults to v1.2 → produces vllm-spark-omni-q36:v1.2
 #
 # Build time: 45-75 min on Spark
 set -euo pipefail
 
-TAG="${1:-v1}"
+TAG="${1:-v1.2}"
 IMAGE_LOCAL="vllm-spark-omni-q36:${TAG}"
 
 cd "$(dirname "$0")/.."

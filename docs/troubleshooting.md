@@ -2,6 +2,16 @@
 
 Symptoms ↔ root causes ↔ fixes for the running deployment.
 
+> 🕰️ **v1 → v2 history (read once, then forget).** v1.0/v1.1 of this image
+> shipped with weights that had the `language_model.` prefix stripped from
+> safetensors keys to match a text-only `Qwen3_5MoeForCausalLM` registry hack.
+> That layout was unstable in production (intermittent `cudaErrorIllegalAddress`
+> mid-decode, NaNs from the prefix-strip codepath). v1.2 image + the v2 weights
+> at `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` (re-quantized 2026-04-19) preserve
+> the canonical multimodal layout (`Qwen3_5MoeForConditionalGeneration`) and run
+> rock-solid under sustained chat load. **If you're hitting weird key errors or
+> registry-class confusion, your weights are probably stale — re-pull.**
+
 ## Boot-time failures
 
 ### `ImportError: libcudart.so.12: cannot open shared object file`
@@ -9,27 +19,44 @@ Symptoms ↔ root causes ↔ fixes for the running deployment.
 You've pulled the **wrong image** (a cu128 official nightly). DGX Spark ships cu130 PyTorch.
 
 ```bash
-docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1   # this one is cu130
+docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2   # this one is cu130
 ```
 
-### `KeyError: 'language_model.layers.X.mlp.experts.w2_input_global_scale'`
+### `KeyError: 'experts.w2_input_global_scale'` (or similar prefix-strip key error)
 
-Your vLLM is too old / missing the MoE-loader fix for text-only Qwen3_5MoeForCausalLM.
+You're running v2 weights through a v1.x image, OR v1 weights (no `language_model.` prefix)
+through the v1.2 image. The two layouts are not interchangeable.
 
-This image bakes the fix in. If you see this, you're either:
-- Running an old image — pull `ghcr.io/aeon-7/vllm-spark-omni-q36:v1` again
-- Running a stock vLLM image — switch to ours
+Verify weights:
+```bash
+python3 -c "
+from safetensors import safe_open
+with safe_open('/opt/qwen36/qwen36-nvfp4/model-00001-of-00009.safetensors','pt') as f:
+    has_lm_prefix = any('language_model' in k for k in f.keys())
+    print('multimodal (v2):' if has_lm_prefix else 'text-only (v1):', 'OK' if has_lm_prefix else 'STALE')
+"
+```
+
+If `STALE`, re-pull from HF — the v2 commit on the same repo URL replaces v1:
+```bash
+rm -rf /opt/qwen36/qwen36-nvfp4
+hf download AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4 --local-dir /opt/qwen36/qwen36-nvfp4
+```
 
 ### `Resolved architecture: Qwen3_5MoeForConditionalGeneration`
 
-The registry patch didn't apply. vLLM is falling back to the multimodal class. Re-run the patch manually inside the container:
+**Under v1.2 image + v2 weights this is the EXPECTED message — not an error.** The image
+no longer needs to register text-only `Qwen3_5MoeForCausalLM`. The multimodal class loads
+the v2 weights natively and runs in text-only mode (no image inputs in chat) with no extra
+patches in the hot path.
 
+If you're running v1.0 or v1.1 image with v1 (prefix-stripped) weights and seeing this,
+your registry patch didn't apply. Either upgrade to v1.2 + v2 weights (recommended), or
+inside the v1.x container run:
 ```bash
 docker exec -it vllm-qwen36-heretic python3 /opt/patches/register_qwen3_5_text.py
 docker restart vllm-qwen36-heretic
 ```
-
-If the patch script reports "already applied" but logs still show the wrong architecture, the registry was somehow restored — check if you mounted a host directory over `/usr/local/lib/python3.12/dist-packages/vllm/`.
 
 ### `ValueError: Selected backend AttentionBackendEnum.FLASH_ATTN is not valid for this configuration. Reason: ['kv_cache_dtype not supported']`
 
@@ -71,7 +98,16 @@ Three causes:
 
 Tracked by vLLM issue [#39761](https://github.com/vllm-project/vllm/issues/39761) — sm_120 NVFP4 decode kernel has a CUDA-graph-capture bug.
 
-Workaround: add `--enforce-eager` to the compose:
+The v1.2 image bakes the `VLLM_TEST_FORCE_FP8_MARLIN=1` env var as default, which avoids
+the broken CUTLASS NVFP4 GEMM and resolves this on most workloads. Verify it's set:
+
+```bash
+docker exec vllm-qwen36-heretic env | grep MARLIN
+# expect: VLLM_TEST_FORCE_FP8_MARLIN=1
+```
+
+If you still see this error with Marlin forced, **last-resort workaround**: add `--enforce-eager`
+to the compose:
 
 ```yaml
 command:
@@ -83,7 +119,8 @@ command:
       --enforce-eager
 ```
 
-Cost: ~10-15% throughput. The fix is being tracked upstream.
+Cost: ~30% throughput vs. cudagraph-enabled. File a bug — with v1.2 + v2 weights + recent
+DFlash drafter, this should not occur.
 
 ### `cudaErrorIllegalAddress` / "illegal memory access" mid-decode
 

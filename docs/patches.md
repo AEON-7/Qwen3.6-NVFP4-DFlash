@@ -1,14 +1,25 @@
 # Patches applied in this image
 
-The image bakes in 7 patches plus 1 source-build modification. Each is a targeted fix for a real issue in vLLM HEAD running Qwen3.6 on sm_120/sm_121a (DGX Spark).
+The v1.2 image bakes in **5 vLLM source patches** + **1 build flag** + **1 dependency upgrade** + **1 mandatory env var** = 8 modifications total. Each is a targeted fix for a real issue running Qwen3.6 on sm_120/sm_121a (DGX Spark).
 
 All patches live in [`patches/`](../patches/) (Python scripts that modify the installed vLLM dist-package files at image build time, idempotently).
 
+> **v2 weights note:** v1 of these weights (text-only key layout) required patch #1
+> below to be active in the registry. **v2 weights** (the production
+> `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` published 2026-04-19) load via vLLM's
+> canonical multimodal `Qwen3_5MoeForConditionalGeneration` class with no
+> registry override needed. Patch #1 is still applied (idempotent, harmless) for
+> backward-compat with anyone still on v1 weights.
+
 ---
 
-## 1. `register_qwen3_5_text.py` — register text-only Qwen3.6 classes
+## 1. `register_qwen3_5_text.py` — register text-only Qwen3.6 classes (v1-only, harmless on v2)
 
-**Problem:** vLLM HEAD's `_TEXT_GENERATION_MODELS` registry doesn't include `Qwen3_5ForCausalLM` or `Qwen3_5MoeForCausalLM` (the text-only Qwen3.6 classes). Only the multimodal `Qwen3_5MoeForConditionalGeneration` is registered. Loading a text-only checkpoint falls through to the multimodal path and crashes on `vision_config.spatial_merge_size`.
+**Problem:** vLLM HEAD's `_TEXT_GENERATION_MODELS` registry doesn't include `Qwen3_5ForCausalLM` or `Qwen3_5MoeForCausalLM` (the text-only Qwen3.6 classes). Only the multimodal `Qwen3_5MoeForConditionalGeneration` is registered.
+
+**v1 use:** v1 weights had the `language_model.` key prefix stripped to match the text-only class, so the registry entry was mandatory.
+
+**v2 use:** v2 weights preserve the multimodal layout, so vLLM picks `Qwen3_5MoeForConditionalGeneration` natively. The text-only registry entry is unused but kept for backward-compat (idempotent — re-applying does nothing).
 
 **Fix:** insert the two text-only entries into `_TEXT_GENERATION_MODELS` after the existing `Qwen3MoeForCausalLM` entry.
 
@@ -65,36 +76,62 @@ Source for the canonical formula: vLLM `qwen2_5_vl.py:1072-1109`, transformers `
 
 ---
 
-## 8. Safetensors prefix strip (one-time, applied to weights not vLLM)
+## 8. `patch_cudagraph_align.py` — CUDA graph capture-size alignment (SM121 stability)
 
-Not a vLLM patch but documented here for completeness.
+**Problem:** vLLM's `compilation.py:1378` only applies the spec-decode capture-size alignment filter when `cudagraph_mode=FULL`. Default `PIECEWISE` mode silently skips it, so capture sizes contain non-multiples of `(1 + num_speculative_tokens)`. With DFlash k=15 and default capture sizes `[1, 2, 4, 8, 16, 24, 32, 40, ...]`, partial-acceptance decode steps land on graph slots that don't divide evenly, triggering `cudaErrorIllegalAddress` mid-decode on SM121.
 
-**Problem:** The source model `tvall43/Qwen3.6-35B-A3B-heretic` was structured as multimodal Qwen3.6, so llmcompressor saved keys as `model.language_model.layers.X.*` (3 levels). But our config declares text-only architecture (`Qwen3_5MoeForCausalLM`), and vLLM's text-only loader expects `model.layers.X.*` (2 levels). Mismatch → `KeyError` on every parameter.
+**Fix:** remove the FULL-only gate so PIECEWISE mode also gets aligned capture sizes. Without this patch, users would need to pass `--compilation-config '{"cudagraph_capture_sizes":[16,32,48,...]}'` manually as a workaround.
 
-**Fix:** one-shot rewrite of `model.safetensors` stripping the `language_model.` segment from every key. Done by [`scripts/strip_language_model_prefix.py`](../patches/strip_language_model_prefix.py) (also in `qwen36-omni-build/`). The corrected weights are what's published at `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`.
+This patch + the post-2026-04-19 DFlash drafter together eliminate the need for `--enforce-eager`, restoring ~30% throughput.
+
+**Code:** [`patches/patch_cudagraph_align.py`](../patches/patch_cudagraph_align.py)
+
+---
+
+## (No longer applied) Safetensors prefix strip — superseded by v2 weights
+
+**v1 only — not used in the v1.2 production image.** v1 of the published weights had `model.language_model.layers.X.*` keys rewritten to `model.layers.X.*` so they'd load via the text-only `Qwen3_5MoeForCausalLM` class. The rewrite codepath turned out to be unstable in vLLM's loader at scale.
+
+v2 weights (re-quantized 2026-04-19 with `AutoModelForImageTextToText`) preserve the canonical multimodal key layout and load natively via `Qwen3_5MoeForConditionalGeneration`. **No prefix-strip is performed at any stage.**
+
+If you have a v1 checkpoint locally, the simplest fix is: delete and re-pull `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` (the same repo URL — v2 commits replaced v1).
+
+---
+
+## Build-time modifications (not patches but required)
+
+| # | Item | What it does |
+|---:|---|---|
+| A | `TORCH_CUDA_ARCH_LIST="12.0+PTX"` | Single-arch sm_120 build with PTX → driver JITs to sm_121a on Spark |
+| B | `flashinfer-python>=0.6.8` | sm_120 NVFP4 KV-cache decode kernels (PRs #2520, #2702) |
+| C | `VLLM_TEST_FORCE_FP8_MARLIN=1` (env, baked default) | Forces Marlin GEMM. CUTLASS NVFP4 is broken on SM121 (101 KB SMEM vs 228 KB on SM100). |
 
 ---
 
 ## Why so many patches?
 
-vLLM HEAD's text-only Qwen3.6 (`qwen3_5_moe_text` / `Qwen3_5MoeForCausalLM`) is **work-in-progress**. The architecture exists in the codebase but isn't fully wired:
-- Registry entries missing
-- Hybrid attention KV cache assumes uniform block_size
-- M-RoPE methods unimplemented
-- Reference RedHatAI checkpoints use the *multimodal* arch (which is more wired) but ours is text-only
+vLLM HEAD on Qwen3.6 + DFlash + sm_121a hits multiple work-in-progress edges:
+- Hybrid attention KV cache assumes uniform block_size (no MambaSpec accommodation)
+- M-RoPE methods unimplemented for either Qwen3.6 class
+- gpt-oss MXFP4 kernels referenced in `_C_stable_libtorch.abi3.so` undefined on sm_120
+- CUTLASS NVFP4 SMEM overflows on SM121's reduced shared memory
+- CUDA graph capture-size alignment gated to FULL mode, breaking PIECEWISE+spec-decode
+- Text-only registry classes unregistered upstream (legacy v1 path; harmless on v2)
 
-These patches make text-only Qwen3.6 actually load and serve. The work will mostly be obviated as upstream PRs land — at which point we'd drop the corresponding patches. See each patch's docstring for the upstream PR/issue tracking.
+These patches collapse all of that into a single `docker compose up -d`. Each will be dropped as upstream PRs land — see each patch's docstring for the issue/PR tracking.
 
 ---
 
 ## Patch ordering
 
-Patches must apply in this order (encoded in the [Dockerfile](../Dockerfile)):
+Patches apply in this order (encoded in the [Dockerfile](../Dockerfile)):
 
-1. Source-clone vLLM
+1. Source-clone vLLM HEAD
 2. Build vLLM (`uv pip install --no-build-isolation .`)
-3. Apply `register_qwen3_5_text.py`
-4. Apply `patch_cuda_optional_import.py`
-5. Apply `patch_kv_cache_utils.py` (covers 4 sites in one pass)
-6. Apply `patch_mrope_text_fallback.py`
-7. Verification step
+3. Upgrade to flashinfer 0.6.8
+4. Apply `register_qwen3_5_text.py`
+5. Apply `patch_cuda_optional_import.py`
+6. Apply `patch_kv_cache_utils.py` (covers 4 sites in one pass)
+7. Apply `patch_mrope_text_fallback.py`
+8. Apply `patch_cudagraph_align.py`
+9. Verification step (must pass; image is unusable otherwise)

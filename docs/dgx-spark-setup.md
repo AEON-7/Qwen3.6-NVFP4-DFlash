@@ -52,6 +52,13 @@ The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is a **gated repo**. You must:
 2. Click **"Request access"** — usually granted within a few hours
 3. Set `HF_TOKEN` env var or run `huggingface-cli login`
 
+> ⚠️ **CRITICAL — re-pull required if cloned before 2026-04-19.** The earlier
+> z-lab DFlash drafter had a long-context bug that triggered
+> `cudaErrorIllegalAddress` after ~16K tokens. The fixed version is on HF as of
+> 2026-04-19. If your `qwen36-dflash/` directory pre-dates that, delete it and
+> re-pull. Without the fix you must add `--enforce-eager` to the vLLM command,
+> losing ~30% throughput.
+
 ### Optional — for OpenClaw integration
 - OpenClaw installed: https://github.com/openclaw/openclaw
 
@@ -69,7 +76,7 @@ nvidia-smi | grep -E 'GB10|Driver'   # expect "NVIDIA GB10" + driver 580+
 docker run --rm --gpus all nvidia/cuda:13.2.0-base-ubuntu24.04 nvidia-smi | head -3
 
 # 3. GHCR image is pullable (anonymous)
-docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1
+docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
 # If this returns "unauthorized" or "not found":
 #   - The image visibility is set to private. Either:
 #     a) Wait for it to be flipped to public (file an issue at github.com/AEON-7/Qwen3.6-NVFP4-DFlash/issues), OR
@@ -135,10 +142,16 @@ You'll end up with:
 ## Step 3 — Pull the Docker image
 
 ```bash
-docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1
+docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
 ```
 
 ~9 GB compressed, ~22 GB uncompressed. First pull is 3-5 min on a typical home connection.
+
+> **Why `v1.2`?** v1.0/v1.1 shipped with weights stripped of the `language_model.` key prefix
+> for a text-only model class. That layout was unstable in production (intermittent NaN/crash
+> in the prefix-strip codepath). v1.2 image is paired with the v2 multimodal weights
+> (`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`, re-quantized 2026-04-19) which load via vLLM's
+> canonical `Qwen3_5MoeForConditionalGeneration` class and run rock-solid under load.
 
 Verify:
 ```bash
@@ -182,8 +195,22 @@ wait
 
 Verify:
 ```bash
-ls -lh qwen36-nvfp4/model.safetensors    # ~20 GB
-ls -lh qwen36-dflash/model.safetensors   # ~905 MB
+# Main model — ~22 GB across 9 sharded safetensors files
+du -sh qwen36-nvfp4
+ls qwen36-nvfp4/model-*.safetensors | wc -l   # expect 9
+
+# Drafter — ~905 MB, single safetensors file
+ls -lh qwen36-dflash/model.safetensors
+
+# Sanity check — confirm v2 multimodal layout (key prefix should be `model.language_model.`)
+python3 -c "
+from safetensors import safe_open
+with safe_open('qwen36-nvfp4/model-00001-of-00009.safetensors', framework='pt') as f:
+    keys = [k for k in f.keys() if 'experts.0.down_proj' in k]
+    print('Sample expert key:', keys[0] if keys else 'NONE FOUND')
+    assert any('language_model' in k for k in f.keys()), 'WRONG LAYOUT — re-pull AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4'
+    print('OK — v2 multimodal layout confirmed')
+"
 ```
 
 ---
@@ -200,16 +227,26 @@ Or copy [`examples/docker-compose.yml`](../examples/docker-compose.yml) from thi
 
 | Flag | Value | Why |
 |---|---|---|
-| `--max-model-len` | 262144 | Full 256K context |
-| `--max-num-seqs` | 128 | Concurrent request cap |
-| `--max-num-batched-tokens` | 8192 | Chunked prefill chunk size |
-| `--gpu-memory-utilization` | 0.85 | Conservative for unified memory |
+| `--quantization compressed-tensors` | required | NVFP4 packed weights are compressed-tensors `nvfp4-pack-quantized` format |
+| `--max-model-len` | 262144 | Full 256K context (`VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` env required) |
+| `--max-num-seqs` | 128 | Concurrent request cap (validated at 128-concurrency without OOM) |
+| `--max-num-batched-tokens` | 65536 | Chunked prefill chunk size; 65536 gives best aggregate throughput |
+| `--gpu-memory-utilization` | 0.85 | Conservative for 128 GB unified memory (leaves ~18 GB for OS + dflash + KV) |
 | `--attention-backend flash_attn` | required | DFlash needs FlashAttention backend |
-| `--speculative-config` | `{"method":"dflash",...,"num_speculative_tokens":15}` | DFlash with k=15 |
-| `--reasoning-parser qwen3` | | Surfaces reasoning content |
-| `--tool-call-parser qwen3_coder` | | OpenAI-format tool calls |
+| `--speculative-config` | `{"method":"dflash","model":"/models/qwen36-dflash","num_speculative_tokens":15}` | DFlash with k=15 (sweet spot for Qwen3.6 acceptance curve) |
+| `--reasoning-parser qwen3` | | Surfaces `<think>...</think>` content as `reasoning_content` |
+| `--tool-call-parser qwen3_coder` | | OpenAI-format tool calls for agentic workloads |
 | `--served-model-name` | `qwen36-35b-heretic qwen36-fast qwen36-deep` | 3 aliases for one backend (mode routing) |
 | `--enable-chunked-prefill --enable-prefix-caching` | | Standard production flags |
+| `--load-format safetensors` | | Skip auto-detect (saves ~2 s startup) |
+| `--trust-remote-code` | | Required: Qwen3.6 ships custom modeling code |
+| `--enable-auto-tool-choice` | | Honor `"tool_choice":"auto"` from OpenAI clients |
+
+> **Note: `--enforce-eager` is NOT required** with the v1.2 image + the post-2026-04-19
+> DFlash drafter. Earlier writeups recommended it as a workaround for two separate bugs
+> (drafter long-context crash + cudagraph capture-size misalignment). Both are now fixed:
+> the drafter on HF, and the alignment via the v1.2 image's [`patch_cudagraph_align.py`](../patches/patch_cudagraph_align.py).
+> Running with cudagraphs enabled gives ~30% throughput over eager mode.
 
 If you want to tune for higher concurrency at lower context:
 ```yaml
@@ -309,17 +346,19 @@ curl -fsSL \
 python3 /tmp/bench.py --max-tokens 256 --runs 1 --levels "1,4,16,64,128"
 ```
 
-Expected (greedy, T=0, 256-token outputs):
+Expected (v2 weights + v1.2 image + cudagraphs, greedy T=0, 512-token outputs):
 
 | Concurrency | Aggregate tok/s | Per-req tok/s | TTFT |
-|---|---|---|---|
-| 1 | ~91 | ~91 | ~130 ms |
-| 4 | ~199 | ~50 | ~150 ms |
-| 16 | ~548 | ~34 | ~210 ms |
-| 64 | ~729 | ~11 | ~500 ms |
-| 128 | ~487 | ~4 | ~800 ms |
+|---:|---:|---:|---:|
+| 1   | 116.8  | 116.8 | 72 ms |
+| 4   | 218.3  | 54.6  | 146 ms |
+| 16  | 410.1  | 25.6  | 217 ms |
+| 64  | 578.4  | 9.0   | 589 ms |
+| 128 | **785.3** | 6.1 | 801 ms |
 
-If you see substantially lower numbers, jump to [`troubleshooting.md`](troubleshooting.md).
+If you see substantially lower numbers (< 90 tok/s single-stream or < 600 tok/s at 128
+concurrency), jump to [`troubleshooting.md`](troubleshooting.md). The most common
+culprit by a wide margin is `--enforce-eager` left in the compose from a v1 deployment.
 
 ---
 
@@ -380,10 +419,17 @@ Key metrics to watch:
 ## Step 12 — Updating
 
 ```bash
-docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:latest
+# Pin to a specific tag — DON'T use :latest in production (image bumps may
+# require weight re-pull, e.g., the v1.x → v2 transition)
+docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
 cd /opt/qwen36
 docker compose up -d --force-recreate
 ```
+
+When upgrading across major image versions, **always re-read the release notes** for
+weight format changes. The v1.0/v1.1 → v1.2 cutover required re-pulling
+`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` weights — same repo URL, but the v2 commit
+preserved multimodal architecture instead of stripping the `language_model.` key prefix.
 
 ---
 
@@ -392,8 +438,8 @@ docker compose up -d --force-recreate
 ```bash
 cd /opt/qwen36
 docker compose down
-docker rmi ghcr.io/aeon-7/vllm-spark-omni-q36:v1   # optional
-sudo rm -rf /opt/qwen36                              # also removes weights
+docker rmi ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2   # optional
+sudo rm -rf /opt/qwen36                                # also removes weights
 sudo systemctl disable --now vllm-qwen36 2>/dev/null
 sudo rm /etc/systemd/system/vllm-qwen36.service 2>/dev/null
 ```
