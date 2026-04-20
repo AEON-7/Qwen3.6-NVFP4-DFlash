@@ -20,19 +20,40 @@ A production-stable deployment of **[`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](htt
 
 ## Headline performance (measured)
 
-DGX Spark, greedy decoding (T=0), 512-token outputs, full 256K context budget:
+DGX Spark, production config (`--max-num-seqs 128`, `--max-model-len 262144`,
+`--max-num-batched-tokens 65536`, DFlash spec decode `k=15`). Mixed-domain prompt
+set, `enable_thinking=false` for clean decode-rate measurement.
 
-| Concurrency | Aggregate tok/s | Per-request tok/s | TTFT |
-|---:|---:|---:|---:|
-| 1   | 116.8  | 116.8 | 72 ms |
-| 4   | 218.3  | 54.6 | 146 ms |
-| 16  | 410.1  | 25.6 | 217 ms |
-| 64  | 578.4  | 9.0 | 589 ms |
-| **128** | **785.3** | 6.1 | 801 ms |
+**Single-stream decode** (greedy T=0, 10 trials):
+
+| Statistic | tok/s |
+|---|---:|
+| **Median** | **83.9** |
+| p95 | 127.5 |
+| Min | 41.1 |
+| Max | 127.5 |
+
+*Variance reflects DFlash acceptance differences across prompt classes — math/code prompts hit 127 tok/s; open-ended prompts settle around 60-90 tok/s. Decode rate climbs to ~118 tok/s at 1000-token outputs once DFlash steady-state amortizes.*
+
+**Concurrent throughput** (T=0.7 stochastic, 200-tok output, median of 3 runs):
+
+| Concurrent | Errors | Agg tok/s | Per-req decode p50 | TTFT p50 | TTFT p95 |
+|---:|---:|---:|---:|---:|---:|
+| 1   | 0 | 102.9 | 109.1 | 111 ms | 111 ms |
+| 4   | 0 | 128.1 | 48.5  | 191 ms | 191 ms |
+| 16  | 0 | 227.6 | 19.3  | 501 ms | 503 ms |
+| 64  | 0 | 310.8 | 6.9   | 1.07 s | 11.2 s |
+| **128** | 0 | **313.6** | 6.5 | 14.1 s | 46.7 s |
+
+**Zero errors across 1,200+ requests in the full benchmark.**
+
+Aggregate plateaus at ~313 tok/s from 64 concurrent — that's the GB10 compute wall on this 35B-active-3B MoE with linear-attention layers + DFlash drafter overhead. **Best concurrency for chat UX: 4-16** (TTFT < 500 ms, per-req 19-48 tok/s); **best for max throughput: 64-128**.
 
 DFlash spec-decode acceptance: **62-78% position-0**, **2.7-4.4 mean accepted tokens per target step**.
 
 Stress-tested with 22K-token prompts + multi-hour soak: **zero crashes**.
+
+Full bench results (8 sections including TTFT-by-prompt-length, decode-by-output-length, sampling, long-prompt prefill, RAG-style concurrent) on the **HF model card**: [`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](https://huggingface.co/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4#performance-benchmarks). Raw JSON + log: [`bench/qwen36_v2_2026-04-20.json`](bench/qwen36_v2_2026-04-20.json).
 
 ---
 
