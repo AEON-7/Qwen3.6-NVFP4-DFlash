@@ -12,7 +12,7 @@ A production-stable deployment of **[`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`](htt
 | | |
 |---|---|
 | **Model** | `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` (~22 GB, multimodal preserved) |
-| **Drafter** | `z-lab/Qwen3.6-35B-A3B-DFlash` (~905 MB, gated — request access on HF) |
+| **Drafter** | `z-lab/Qwen3.6-35B-A3B-DFlash` (~905 MB, public anonymous pull) |
 | **Hardware** | DGX Spark (NVIDIA GB10, 128 GB unified memory, sm_121a) |
 | **Image** | `ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2` (~9 GB compressed) |
 
@@ -79,15 +79,13 @@ Full bench results (8 sections including TTFT-by-prompt-length, decode-by-output
 | Docker | ≥ 25.x | with `nvidia-container-toolkit` |
 | OS | Ubuntu 24.04 LTS confirmed | other Linux distros likely fine |
 
-### Hugging Face access (mandatory for drafter)
-The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is a **gated** HF repo:
-1. Visit https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
-2. Click **"Request access"** — usually granted within hours
-3. Run `huggingface-cli login` or set `HF_TOKEN` env var
+### DFlash drafter (no auth required)
+The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is now a **public** HF repo —
+just `hf download` it directly, no token needed.
 
 > ⚠️ If you cloned the drafter before **2026-04-19**, you MUST re-pull. The earlier
 > drafter had a long-context bug that caused `cudaErrorIllegalAddress` crashes
-> after ~16K tokens. The fixed version is now on HF.
+> after ~16K tokens. The fixed version is on HF as of 2026-04-19.
 
 ---
 

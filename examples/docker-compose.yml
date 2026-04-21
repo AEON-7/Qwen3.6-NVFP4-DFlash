@@ -23,13 +23,20 @@ services:
       - TORCH_MATMUL_PRECISION=high
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - NVIDIA_FORWARD_COMPAT=1
-      # ▼ MANDATORY for DGX Spark / SM121 stability ▼
-      # FlashInfer's CUTLASS NVFP4 path is broken on SM121 (only 101 KB SMEM per SM
-      # vs 228 KB on SM100 → autotuner SMEM-overflows on every tile shape larger
-      # than 128×128×64B; dense FP4 GEMM produces NaN/zeros from E2M1 instruction
-      # incompatibility). Without this, vLLM crashes mid-decode with
-      # cudaErrorIllegalAddress within minutes.
-      # Reference: rmagur1203/vllm-dgx-spark TLDR.md (4-day, 144-config investigation).
+      # ▼ Belt-and-suspenders for NVFP4 MoE backend selection ▼
+      # vLLM's auto-selector already arrives at MARLIN for the MoE path on this
+      # 256-expert × 512-intermediate shape (every other backend — FLASHINFER_TRTLLM,
+      # FLASHINFER_CUTEDSL{,_BATCHED}, FLASHINFER_CUTLASS, VLLM_CUTLASS — rejects our
+      # config in is_supported_config()). This env var pins the choice defensively
+      # against future vLLM versions that might add a half-broken backend.
+      #
+      # IMPORTANT: this env affects MoE only. The LINEAR (q/k/v/o, mlp) path uses
+      # FlashInferCutlassNvFp4LinearKernel — native FP4 tensor cores on SM121,
+      # unaffected by this env, autotuned at boot. So we ARE getting native FP4
+      # hardware on the linear layers; only the MoE expert path falls back to
+      # Marlin's weight-only-decompress-to-BF16 kernel until kernels are widened.
+      #
+      # See docs/troubleshooting.md "Root cause clarification" for the full picture.
       - VLLM_TEST_FORCE_FP8_MARLIN=1
     volumes:
       - ${QWEN36_MODELS_DIR:-/opt/qwen36}/qwen36-nvfp4:/models/qwen36

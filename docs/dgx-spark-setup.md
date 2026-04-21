@@ -46,11 +46,9 @@ If you need it on different hardware, see [`build.md`](build.md) — the Dockerf
 | Docker | ≥ 25.x | with `nvidia-container-toolkit` |
 | OS | Ubuntu 24.04 LTS | other distros likely OK |
 
-### Hugging Face access (mandatory for drafter)
-The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is a **gated repo**. You must:
-1. Visit https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
-2. Click **"Request access"** — usually granted within a few hours
-3. Set `HF_TOKEN` env var or run `huggingface-cli login`
+### DFlash drafter (no auth required)
+The DFlash drafter `z-lab/Qwen3.6-35B-A3B-DFlash` is now a **public** HF repo —
+no token, no access request, just pull it directly.
 
 > ⚠️ **CRITICAL — re-pull required if cloned before 2026-04-19.** The earlier
 > z-lab DFlash drafter had a long-context bug that triggered
@@ -83,10 +81,9 @@ docker pull ghcr.io/aeon-7/vllm-spark-omni-q36:v1.2
 #     b) If you're AEON-7: flip at github.com/users/AEON-7/packages/container/vllm-spark-omni-q36/settings, OR
 #     c) Build from source per docs/build.md (note: also requires a public base image)
 
-# 4. Hugging Face access to the gated DFlash drafter
+# 4. DFlash drafter is publicly pullable — no auth needed
 hf download z-lab/Qwen3.6-35B-A3B-DFlash README.md --local-dir /tmp/dflash-test
-# If this 401s, request access at https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
-# (usually approved within hours)
+# Should succeed without HF_TOKEN. Repo was un-gated 2026-04-21.
 ```
 
 All 4 pass → proceed. Any fails → fix that one first.
@@ -160,23 +157,14 @@ docker images vllm-spark-omni-q36 --format 'table {{.Repository}}:{{.Tag}}\t{{.S
 
 ---
 
-## Step 4 — Set up Hugging Face access
+## Step 4 — Install the HF CLI (no token required)
 
 ```bash
 # Install hf CLI if missing
 pip install --upgrade --user "huggingface_hub[hf_transfer]"
-
-# Set token (get from https://huggingface.co/settings/tokens)
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Test access to the gated drafter
-hf auth whoami
-# Should print your HF username
-
-# Confirm drafter access (will 401 if not granted yet)
-hf download z-lab/Qwen3.6-35B-A3B-DFlash README.md --local-dir /tmp/dflash-test
-# If this 401s, request access and wait for approval
 ```
+
+Both weight repos (`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` and `z-lab/Qwen3.6-35B-A3B-DFlash`) are **public anonymous-pull** — no `HF_TOKEN`, no access request. If you already have `HF_TOKEN` set for other work it won't hurt, but it's not required.
 
 ---
 

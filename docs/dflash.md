@@ -124,11 +124,11 @@ This costs ~10-15% throughput but is stable.
 
 ### Drafter "model not found" / HTTP 401
 
-The `z-lab/Qwen3.6-35B-A3B-DFlash` repo is **gated**. Request access first:
+**As of 2026-04-21 the drafter repo is public** — anonymous pull works. If you're seeing
+401/403, troubleshoot:
 
-1. Go to https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
-2. Click "Request access" — usually granted within hours
-3. Set `HF_TOKEN` env var or `huggingface-cli login`
+1. Confirm anonymous pull works: `curl -I https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash/resolve/main/config.json` (expect HTTP 200)
+2. If you have a stale/invalid `HF_TOKEN` set, it can OVERRIDE anonymous access — try `unset HF_TOKEN && hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir /tmp/test`
 
 ## Disabling DFlash for A/B comparison
 

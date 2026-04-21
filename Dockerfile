@@ -44,10 +44,15 @@ ENV PIP_NO_CACHE_DIR=1 \
     CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:$PATH \
     VLLM_TEST_FORCE_FP8_MARLIN=1
-    # VLLM_TEST_FORCE_FP8_MARLIN=1 baked in as default — required for SM121/GB10 stability.
-    # FlashInfer's CUTLASS NVFP4 path crashes with cudaErrorIllegalAddress on SM121 due
-    # to 101KB SMEM limit (vs 228KB on SM100). Marlin is the only stable backend.
-    # Override with -e VLLM_TEST_FORCE_FP8_MARLIN=0 if you've patched CUTLASS yourself.
+    # VLLM_TEST_FORCE_FP8_MARLIN=1 baked in as default — defensive pin for the
+    # NVFP4 MoE backend on Qwen3.6-style 256-expert × 512-intermediate shapes.
+    # As of 2026-04-21, every non-Marlin NVFP4 MoE backend (FLASHINFER_TRTLLM,
+    # FLASHINFER_CUTEDSL{,_BATCHED}, FLASHINFER_CUTLASS, VLLM_CUTLASS) rejects
+    # our shape in is_supported_config(); auto-selector arrives at MARLIN anyway.
+    # The env is redundant on this build but defends against future vLLM releases
+    # that add a half-broken backend the auto-selector would pick.
+    # NOTE: the LINEAR NVFP4 path is unaffected — it uses FlashInferCutlassNvFp4Linear
+    # (native FP4 tensor cores on SM121, autotuned at boot). Only MoE falls back.
 
 # Pre-build snapshot
 RUN python3 -c "import torch; print(f'torch={torch.__version__} CUDA={torch.version.cuda}')" && \

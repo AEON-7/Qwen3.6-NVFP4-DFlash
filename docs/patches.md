@@ -104,7 +104,7 @@ If you have a v1 checkpoint locally, the simplest fix is: delete and re-pull `AE
 |---:|---|---|
 | A | `TORCH_CUDA_ARCH_LIST="12.0+PTX"` | Single-arch sm_120 build with PTX → driver JITs to sm_121a on Spark |
 | B | `flashinfer-python>=0.6.8` | sm_120 NVFP4 KV-cache decode kernels (PRs #2520, #2702) |
-| C | `VLLM_TEST_FORCE_FP8_MARLIN=1` (env, baked default) | Forces Marlin GEMM. CUTLASS NVFP4 is broken on SM121 (101 KB SMEM vs 228 KB on SM100). |
+| C | `VLLM_TEST_FORCE_FP8_MARLIN=1` (env, baked default) | Defensive pin on the **MoE** NVFP4 backend. Empirically (tested 2026-04-21) every non-Marlin candidate (FLASHINFER_TRTLLM/CUTEDSL/CUTEDSL_BATCHED/CUTLASS, VLLM_CUTLASS) rejects our 256-expert × 512-intermediate shape in `is_supported_config()` — auto-selector arrives at MARLIN anyway. Env is redundant on this build but defends against future vLLM versions that add a half-broken backend. The **linear** NVFP4 path is unaffected and uses `FlashInferCutlassNvFp4LinearKernel` (native FP4 tensor cores on SM121). |
 
 ---
 

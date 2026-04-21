@@ -131,13 +131,19 @@ Search for `cudaErrorIllegalAddress'
 ```
 Container auto-restarts (if you have `restart: unless-stopped`). Crashes recur every few minutes.
 
-**Root cause:** FlashInfer's CUTLASS NVFP4 grouped-GEMM kernel is broken on SM121. Only 101 KB SMEM per SM (vs 228 KB on SM100) — the autotuner picks tile shapes that overflow SMEM at runtime. Documented in [rmagur1203/vllm-dgx-spark TLDR](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md): 4 days of testing 144 configs across 6 axes confirmed CUTLASS NVFP4 is unstable on SM121 without 4 custom CUTLASS header patches.
+**Root cause clarification (updated 2026-04-21 after empirical re-test):**
+
+Two separate things were historically conflated under "CUTLASS broken on SM121":
+
+1. **CUTLASS NVFP4 *linear* GEMM** (q/k/v/o, mlp projections) — **works fine on SM121.** vLLM picks `FlashInferCutlassNvFp4LinearKernel` automatically; autotunes 17 fp4_gemm profiles at boot; native FP4 tensor cores fire. **No env var needed.** (Confirm: `docker logs vllm-qwen36-heretic | grep "FlashInferCutlassNvFp4LinearKernel"`.)
+
+2. **CUTLASS NVFP4 *grouped* GEMM** (MoE experts) — broken-ish for our shape. We tested all 5 non-Marlin candidates on 2026-04-21 with `VLLM_USE_FLASHINFER_MOE_FP4=1` then again without it: **every backend** (`FLASHINFER_TRTLLM`, `FLASHINFER_CUTEDSL`, `FLASHINFER_CUTEDSL_BATCHED`, `FLASHINFER_CUTLASS`, `VLLM_CUTLASS`) rejected our 256-expert × 512-intermediate × NVFP4 config in their `is_supported_config()` checks. This is a **kernel shape-alignment limitation**, not an SM121-specific hardware bug — same wall the supergemma4 deploy hit with a different (704) intermediate dim. Marlin (weight-only decompress to BF16) is the only supported backend for this MoE shape until kernels are widened. The original SMEM-overflow finding from [rmagur1203/vllm-dgx-spark TLDR](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md) is a separate, real issue affecting some shapes on SM121 — not all.
 
 **Fix:** TWO independent fixes both required:
 
-**1. Force the Marlin GEMM kernel** (avoids broken NVFP4 CUTLASS):
+**1. Use Marlin for the MoE GEMM** (the only supported NVFP4 MoE backend for our shape):
 ```yaml
-# in compose, environment:
+# in compose, environment (belt-and-suspenders):
 - VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 The omni image bakes this in. Verify:
@@ -145,6 +151,8 @@ The omni image bakes this in. Verify:
 docker exec vllm-qwen36-heretic env | grep MARLIN
 # expect: VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
+
+> **Note (2026-04-21):** This env var is **redundant in the current vLLM build** — auto-selection already arrives at MARLIN since all 5 other backends reject our MoE shape. Kept as defensive in case future vLLM versions add a half-broken backend that auto-selector picks. The linear path is unaffected and uses CUTLASS NVFP4 natively — see the "Root cause clarification" above.
 
 **2. Re-pull the latest DFlash drafter from z-lab**:
 
@@ -242,13 +250,14 @@ hf download z-lab/Qwen3.6-35B-A3B-DFlash --local-dir /opt/qwen36/qwen36-dflash
 
 ### Drafter HTTP 401 / 403 on first boot
 
-The drafter repo is gated. Request access:
+**As of 2026-04-21 the drafter repo is public** — anonymous pull works. If you're seeing
+401/403 anyway, the most likely causes are:
 
-1. Visit https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash
-2. Click "Request access" — usually granted within hours
-3. Set `HF_TOKEN` and re-pull
+1. **HF outage / temporary block** — try `curl -I https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash/resolve/main/config.json` directly; if that 5xx-s, wait and retry.
+2. **Local stale auth** — your `HF_TOKEN` env var is set to an invalid/expired token that's overriding anonymous access. Try `unset HF_TOKEN && hf download ...`.
+3. **Corporate proxy / DNS** — `huggingface.co` resolves but the response is being mangled. Test from a different network.
 
-You don't need `HF_TOKEN` at vLLM serve time if the drafter is already on disk. It's only needed during `hf download`.
+vLLM doesn't need `HF_TOKEN` at serve time regardless — it only reads from local `/models/qwen36-dflash`.
 
 ## Performance issues
 
