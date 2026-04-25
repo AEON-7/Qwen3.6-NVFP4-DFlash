@@ -130,20 +130,22 @@ For the full step-by-step (with pre-flight + post-deploy verification), see [`do
 
 ## What this image actually is
 
-vLLM HEAD source-built for **CUDA 13.0 / sm_120 + PTX** (DGX Spark / GB10 / sm_121a) with the following **8 patches baked in** — every one solves a real upstream bug we hit during deployment:
+vLLM HEAD source-built for **CUDA 13.0 / sm_120 + PTX** (DGX Spark / GB10 / sm_121a) with the following **v1/v1.2 backport patch set**. Each entry came from a real deployment failure, but several are now legacy on newer vLLM/FlashInfer bases and are kept here so operators can tell which fixes still apply to their image.
 
 | # | Patch | What it fixes |
 |---:|---|---|
-| 1 | `register_qwen3_5_text.py` | Adds text-only `Qwen3_5MoeForCausalLM` to vLLM model registry. Upstream PRs (#36289, #36607, #36850) closed unmerged. **Not strictly required for v2 multimodal weights but harmless.** |
-| 2 | `patch_cuda_optional_import.py` | Wraps `import vllm._C_stable_libtorch` in `RTLD_LAZY` dlopen. The .so depends on SM100-only MXFP4 kernels (`mxfp4_experts_quant`) that don't exist on sm_120. |
-| 3 | `patch_kv_cache_utils.py` (×4 sites) | Mamba/linear-attention groups have `block_size=None`. Multiple downstream sites in vLLM HEAD do `block_size * X` arithmetic on this. Defaults to `cache_config.block_size or 16` at MambaSpec creation, plus None-safe guards at min()/cdiv() sites. |
+| 1 | `register_qwen3_5_text.py` | Adds text-only `Qwen3_5MoeForCausalLM` to vLLM model registry. **Legacy for v2 multimodal weights** because they load through the canonical multimodal class, but harmless/backward-compatible for v1 text-layout weights. |
+| 2 | `patch_cuda_optional_import.py` | Wraps `import vllm._C_stable_libtorch` in `RTLD_LAZY` dlopen. Needed on older sm_120 builds where `_C_stable_libtorch` references unresolved SM100-only MXFP4 symbols. Newer vLLM builds may already export the needed stubs and can skip this. |
+| 3 | `patch_kv_cache_utils.py` (×4 sites) | Mamba/linear-attention groups could expose `block_size=None` to downstream arithmetic. Newer vLLM commits derive/validate `mamba_block_size` before these paths execute, so this is mainly an older-base backport. |
 | 4 | `patch_mrope_text_fallback.py` | Qwen3.6 declares M-RoPE in config but no model class implements `get_mrope_input_positions` in vLLM HEAD. Adds inline fallback for the canonical text-only positions (T=H=W=arange). |
-| 5 | `patch_cudagraph_align.py` | `compilation.py:1378` only applies the spec-decode cudagraph capture-size alignment for `cudagraph_mode=FULL`; PIECEWISE silently skipped it. Result: capture sizes contained non-multiples of (1+spec_tokens), causing `cudaErrorIllegalAddress` on partial-acceptance decode steps. Patch removes the FULL-only gate. |
-| 6 | ENV `VLLM_TEST_FORCE_FP8_MARLIN=1` | Forces Marlin GEMM. FlashInfer's CUTLASS NVFP4 path is broken on SM121 (101 KB SMEM vs 228 KB on SM100; autotuner SMEM-overflows on every tile shape larger than 128×128×64B). |
+| 5 | `patch_cudagraph_align.py` | Aligns spec-decode CUDA graph capture sizes for **pure `PIECEWISE`** mode. Default `FULL_AND_PIECEWISE` spec-decode deployments already capture FULL decode graphs and have not reproduced this failure in long soaks. |
+| 6 | ENV `VLLM_TEST_FORCE_FP8_MARLIN=1` | **v1/v1.2 compatibility guard only.** Current v2 images set this to `0` and use FlashInfer CUTLASS NVFP4 successfully on GB10. Keep Marlin only for older bases or shapes that still reject CUTLASS/grouped kernels. |
 | 7 | ENV `TORCH_CUDA_ARCH_LIST="12.0+PTX"` | Build target for sm_120, runtime JITs to sm_121a on Spark. |
 | 8 | flashinfer 0.6.8 | sm_120 NVFP4 KV-cache decode kernels (PRs #2520, #2702). |
 
 All patches live in [`patches/`](patches/) and run automatically at image build time (idempotent). The [`Dockerfile`](Dockerfile) is reproducible — see [`docs/build.md`](docs/build.md).
+
+**Current v2 note:** `ghcr.io/aeon-7/vllm-spark-omni-q36:v2` and `ghcr.io/aeon-7/vllm-aeon-ultimate:qwen36-v2` bake the production GB10 defaults (`VLLM_TEST_FORCE_FP8_MARLIN=0`, `VLLM_USE_FLASHINFER_MOE_FP4=0`) and have been validated with FlashInfer CUTLASS NVFP4. `latest` intentionally remains on the v1.2 line for compatibility.
 
 ---
 

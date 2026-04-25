@@ -98,16 +98,20 @@ Three causes:
 
 Tracked by vLLM issue [#39761](https://github.com/vllm-project/vllm/issues/39761) — sm_120 NVFP4 decode kernel has a CUDA-graph-capture bug.
 
-The v1.2 image bakes the `VLLM_TEST_FORCE_FP8_MARLIN=1` env var as default, which avoids
-the broken CUTLASS NVFP4 GEMM and resolves this on most workloads. Verify it's set:
+First check which image line you are on:
+
+- `v1.2` and older baked `VLLM_TEST_FORCE_FP8_MARLIN=1` as a conservative Marlin guard.
+- `v2` and newer bake `VLLM_TEST_FORCE_FP8_MARLIN=0` and use the validated FlashInfer CUTLASS NVFP4 linear path.
+
+Verify the value rather than assuming one default:
 
 ```bash
 docker exec vllm-qwen36-heretic env | grep MARLIN
-# expect: VLLM_TEST_FORCE_FP8_MARLIN=1
+# v1.2: expect VLLM_TEST_FORCE_FP8_MARLIN=1
+# v2:   expect VLLM_TEST_FORCE_FP8_MARLIN=0
 ```
 
-If you still see this error with Marlin forced, **last-resort workaround**: add `--enforce-eager`
-to the compose:
+If you still see this error after confirming the expected backend for your image line, **last-resort workaround**: add `--enforce-eager` to the compose:
 
 ```yaml
 command:
@@ -119,8 +123,7 @@ command:
       --enforce-eager
 ```
 
-Cost: ~30% throughput vs. cudagraph-enabled. File a bug — with v1.2 + v2 weights + recent
-DFlash drafter, this should not occur.
+Cost: ~30% throughput vs. cudagraph-enabled. File a bug with your image tag, FlashInfer version, backend log line, and whether you are running pure `PIECEWISE` or `FULL_AND_PIECEWISE` CUDA graphs.
 
 ### `cudaErrorIllegalAddress` / "illegal memory access" mid-decode
 
@@ -139,20 +142,23 @@ Two separate things were historically conflated under "CUTLASS broken on SM121":
 
 2. **CUTLASS NVFP4 *grouped* GEMM** (MoE experts) — broken-ish for our shape. We tested all 5 non-Marlin candidates on 2026-04-21 with `VLLM_USE_FLASHINFER_MOE_FP4=1` then again without it: **every backend** (`FLASHINFER_TRTLLM`, `FLASHINFER_CUTEDSL`, `FLASHINFER_CUTEDSL_BATCHED`, `FLASHINFER_CUTLASS`, `VLLM_CUTLASS`) rejected our 256-expert × 512-intermediate × NVFP4 config in their `is_supported_config()` checks. This is a **kernel shape-alignment limitation**, not an SM121-specific hardware bug — same wall the supergemma4 deploy hit with a different (704) intermediate dim. Marlin (weight-only decompress to BF16) is the only supported backend for this MoE shape until kernels are widened. The original SMEM-overflow finding from [rmagur1203/vllm-dgx-spark TLDR](https://github.com/rmagur1203/vllm-dgx-spark/blob/main/TLDR.md) is a separate, real issue affecting some shapes on SM121 — not all.
 
-**Fix:** TWO independent fixes both required:
+**Fix:** apply the version-appropriate backend setting and make sure the drafter is current:
 
-**1. Use Marlin for the MoE GEMM** (the only supported NVFP4 MoE backend for our shape):
+**1. Use the backend setting for your image line**:
 ```yaml
-# in compose, environment (belt-and-suspenders):
+# v1.2 / older compatibility guard:
 - VLLM_TEST_FORCE_FP8_MARLIN=1
+
+# v2 / newer validated CUTLASS path:
+- VLLM_TEST_FORCE_FP8_MARLIN=0
+- VLLM_USE_FLASHINFER_MOE_FP4=0
 ```
-The omni image bakes this in. Verify:
+Verify:
 ```bash
 docker exec vllm-qwen36-heretic env | grep MARLIN
-# expect: VLLM_TEST_FORCE_FP8_MARLIN=1
 ```
 
-> **Note (2026-04-21):** This env var is **redundant in the current vLLM build** — auto-selection already arrives at MARLIN since all 5 other backends reject our MoE shape. Kept as defensive in case future vLLM versions add a half-broken backend that auto-selector picks. The linear path is unaffected and uses CUTLASS NVFP4 natively — see the "Root cause clarification" above.
+> **Note (updated 2026-04-25):** the Marlin force flag is legacy for v1/v1.2 compatibility. Current v2 testing on GB10 confirms FlashInfer CUTLASS NVFP4 linear GEMM is stable; forcing Marlin globally is not recommended for v2.
 
 **2. Re-pull the latest DFlash drafter from z-lab**:
 
@@ -166,7 +172,7 @@ With the fresh drafter, `--enforce-eager` is **no longer needed** and CUDA graph
 
 **Fallback if you can't re-pull**: add `--enforce-eager` to disable CUDA graphs. ~25-30% throughput cost but bypasses the long-context drafter bug. Performance with eager fallback: ~54-67 tok/s single-stream long-form, ~165 tok/s aggregate at 4-concurrent, ~115 tok/s short single-stream.
 
-> **History:** the v1.2 image bakes a separate fix to `vllm/config/compilation.py:1378` that aligns CUDA graph capture sizes to multiples of `(1+num_speculative_tokens)` — also real, also necessary, but not the actual cause of this specific crash. Both fixes are needed for the production config.
+> **History:** the v1.2 image bakes a separate fix to `vllm/config/compilation.py:1378` that aligns CUDA graph capture sizes to multiples of `(1+num_speculative_tokens)`. That fix is still useful for pure `PIECEWISE` CUDA graph mode. Default `FULL_AND_PIECEWISE` spec-decode deployments capture FULL decode graphs and have not reproduced the same failure in long soaks.
 
 ### "Agent couldn't generate a response" / `content: null` with `finish_reason: "length"`
 
