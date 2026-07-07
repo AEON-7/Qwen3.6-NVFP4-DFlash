@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""Patch vLLM hybrid-attention KV-cache None-handling in two files.
+"""Patch vLLM hybrid-attention KV-cache handling for Qwen3.6 (+ DFlash).
 
-Background:
-  Qwen3.6 has hybrid attention: 30 linear_attention layers (mamba-style state,
-  no KV block) + 10 full_attention layers (standard KV block). vLLM HEAD calls
-  `min(block_size for group in groups)` in two places, but linear_attention
-  groups (and added padding groups) have block_size=None. This crashes with
-  `TypeError: '<' not supported between NoneType and NoneType`.
+Qwen3.6 has hybrid attention: 30 linear_attention layers (mamba-style state,
+no KV block) + 10 full_attention layers (standard KV block).
 
-  Fix: filter None values before min(), default to 1 if all None.
+Two distinct bugs are handled here:
+
+1. None-handling. vLLM HEAD calls `min(block_size for group in groups)` in a
+   few places, but linear_attention groups (and added padding groups) have
+   block_size=None, which crashes with
+   `TypeError: '<' not supported between NoneType and NoneType`.
+   Fix: default mamba_block_size / filter None before min().
+
+2. Page-size unification (surfaces with DFlash). Once the drafter's attention
+   layers introduce a larger KV page size, unify_kv_cache_spec_page_size scales
+   block_size to match --- which no-ops for MambaSpec (its page size doesn't
+   depend on block_size), so the trailing page-size assert fails at boot.
+   Fix: pad MambaSpec's physical page via page_size_padded instead. See
+   patch_unify_page_size() below.
 
 Idempotent — safe to run multiple times.
 """
@@ -134,11 +143,62 @@ def patch_mamba_abstract() -> None:
     print(f"[{target.name}] applied mamba_block_size=1 default")
 
 
+def patch_unify_page_size() -> None:
+    """Fix unify_kv_cache_spec_page_size for MambaSpec (GatedDeltaNet) layers.
+
+    With DFlash, the drafter's full_attention layers introduce a larger KV page
+    size than the model's linear_attention (Mamba/GDN) layers, so vLLM calls
+    unify_kv_cache_spec_page_size to bring them into line. That function unifies
+    by scaling block_size up by the page-size ratio --- correct for AttentionSpec,
+    where page_size_bytes is linear in block_size. It is wrong for MambaSpec:
+    MambaSpec.page_size_bytes is derived from a fixed per-sequence state shape
+    (self.shapes / self.dtypes) and never references block_size, so multiplying
+    block_size leaves page_size_bytes unchanged and the trailing
+    `assert new_spec.page_size_bytes == max_page_size` fails every boot at
+    kv_cache_utils.py (this is the AssertionError users hit after the None-safe
+    patches above let boot get this far).
+
+    Fix: for MambaSpec layers, pad the physical page via page_size_padded instead
+    of scaling block_size. MambaSpec already carries page_size_padded for exactly
+    this, and vLLM already uses the same padding path for the divisible-but-strided
+    attention case a few lines down --- it's just never applied to Mamba here.
+    Costs vLLM's own "may waste at most N% KV cache memory" padding warning at
+    boot, which is expected. Related upstream: vllm-project/vllm#41560.
+    """
+    target = Path("/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py")
+    src = target.read_text()
+    if "# kv_cache_utils_mamba_page_size_padded" in src:
+        print(f"[{target.name}] unify page-size already applied")
+        return
+
+    old = (
+        "            layer_page_size = layer_spec.page_size_bytes\n"
+        "            if max_page_size % layer_page_size == 0:"
+    )
+    new = (
+        "            layer_page_size = layer_spec.page_size_bytes\n"
+        "            # kv_cache_utils_mamba_page_size_padded\n"
+        "            if isinstance(layer_spec, MambaSpec):\n"
+        "                # MambaSpec.page_size_bytes is a fixed per-sequence state\n"
+        "                # shape and does NOT scale with block_size, so the ratio\n"
+        "                # branch below no-ops for it and the assert fails. Pad the\n"
+        "                # physical page instead (page_size_padded already exists on\n"
+        "                # MambaSpec for this, same as the strided-attention case).\n"
+        "                new_spec = replace(layer_spec, page_size_padded=max_page_size)\n"
+        "            elif max_page_size % layer_page_size == 0:"
+    )
+    if old not in src:
+        raise RuntimeError(f"anchor not found in {target}")
+    target.write_text(src.replace(old, new, 1))
+    print(f"[{target.name}] applied MambaSpec page_size_padded unify fix")
+
+
 def main() -> None:
     patch_mamba_abstract()
     patch_kv_cache_utils()
     patch_engine_core()
     patch_gpu_model_runner()
+    patch_unify_page_size()
 
 
 if __name__ == "__main__":
