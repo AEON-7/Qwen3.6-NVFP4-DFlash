@@ -49,7 +49,7 @@ All patches live in [`patches/`](../patches/) (Python scripts that modify the in
 
 ---
 
-## 3-6. `patch_kv_cache_utils.py` — Mamba block_size None handling (4 sites)
+## 3-6. `patch_kv_cache_utils.py` — Mamba block_size None handling + page-size unify (5 sites)
 
 **Problem:** Qwen3.6 has hybrid attention (30 linear_attention layers + 10 full_attention layers). vLLM HEAD's MambaSpec creation reads `vllm_config.cache_config.mamba_block_size` which is None on Spark, and many downstream sites do `block_size * X`, `X % block_size`, or `min(block_sizes)` — all crash on None.
 
@@ -65,6 +65,8 @@ All patches live in [`patches/`](../patches/) (Python scripts that modify the in
 The root-cause fix at `mamba/abstract.py` makes most downstream sites work; the other 3 are defense-in-depth in case future code paths hit them too.
 
 **Current status:** legacy/backport for bases that do not derive `mamba_block_size` early. Newer vLLM commits add Qwen3.5/Qwen3.6 model files plus `validate_mamba_block_size` / platform derivation before the `min()` and `cdiv()` sites execute, so they may have the buggy-looking code but never pass `None` into it.
+
+**5th site — `v1/core/kv_cache_utils.py:unify_kv_cache_spec_page_size` (surfaces with DFlash):** distinct from the None-handling above. Once the None patches let boot get far enough, DFlash's drafter attention layers introduce a larger KV page size than the model's Mamba/GDN layers, so vLLM calls `unify_kv_cache_spec_page_size` to reconcile them. It unifies by scaling `block_size` up by the page-size ratio — valid for `AttentionSpec` (page size is linear in `block_size`), wrong for `MambaSpec` (page size comes from a fixed per-sequence state shape and never references `block_size`). The scale silently no-ops and the trailing `assert new_spec.page_size_bytes == max_page_size` fails every boot. Fix: for `MambaSpec` layers, pad the physical page via `page_size_padded` instead of scaling `block_size` — the field already exists on `MambaSpec` for this, and vLLM uses the same padding path for the divisible-but-strided attention case a few lines down. Costs vLLM's own "may waste at most N% KV cache memory" padding warning at boot, which is expected. Related upstream: [vllm-project/vllm#41560](https://github.com/vllm-project/vllm/issues/41560).
 
 **Code:** [`patches/patch_kv_cache_utils.py`](../patches/patch_kv_cache_utils.py)
 
